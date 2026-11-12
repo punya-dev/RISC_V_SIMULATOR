@@ -55,6 +55,7 @@ typedef struct {
 typedef struct {
     IFID if_id; IDEX id_ex; EXMEM ex_mem; MEMWB mem_wb;
     uint64_t cycles, retired, stalls, flushes;
+    uint64_t load_use_stalls, fwd_ex, fwd_mem;
     int forwarding;
 } Pipeline;
 

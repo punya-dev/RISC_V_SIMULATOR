@@ -164,6 +164,8 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
         out.ctrl = d->ctrl;
         Operands o = forward_operands(p, d);
         out.store_val = o.b;
+        nx.fwd_ex += (uint64_t)o.fwd_ex;
+        nx.fwd_mem += (uint64_t)o.fwd_mem;
         if (d->fault != PF_NONE) {
             out.fault_addr = d->pc;
         } else if (d->ctrl.is_branch) {
@@ -211,6 +213,7 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
                     nx.if_id = p->if_id;
                     stall = 1;
                     nx.stalls++;
+                    if (hz.load_use) nx.load_use_stalls++;
                 } else {
                     out.instr = d;
                     out.handler = h;
@@ -248,8 +251,12 @@ void pipeline_run_batch(Pipeline *p, CPUState *cpu, Memory *mem, uint64_t max_cy
     if (cpu->status == CPU_RUNNING) {
         printf("  -> stopped: reached max cycle limit (%llu)\n", (unsigned long long)max_cycles);
     }
-    printf("pipeline: cycles=%llu retired=%llu stalls=%llu flushes=%llu CPI=%.3f\n",
+    printf("pipeline: mode=%s cycles=%llu retired=%llu stalls=%llu flushes=%llu "
+           "CPI=%.3f fwd_ex=%llu fwd_mem=%llu load_use=%llu\n",
+           p->forwarding ? "forward" : "stall",
            (unsigned long long)p->cycles, (unsigned long long)p->retired,
            (unsigned long long)p->stalls, (unsigned long long)p->flushes,
-           p->retired ? (double)p->cycles / (double)p->retired : 0.0);
+           p->retired ? (double)p->cycles / (double)p->retired : 0.0,
+           (unsigned long long)p->fwd_ex, (unsigned long long)p->fwd_mem,
+           (unsigned long long)p->load_use_stalls);
 }
