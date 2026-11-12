@@ -58,7 +58,7 @@ typedef struct {
     int forwarding;
 } Pipeline;
 
-void      pipeline_init(Pipeline *p);
+void      pipeline_init(Pipeline *p, int forwarding);
 CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem);
 void      pipeline_run_batch(Pipeline *p, CPUState *cpu, Memory *mem, uint64_t max_cycles);
 

@@ -1,6 +1,6 @@
 #include "hazard.h"
 
-static int produces(int valid, const ControlSignals *lc, uint32_t rd, uint32_t rs) {
+int produces(int valid, const ControlSignals *lc, uint32_t rd, uint32_t rs) {
     return valid && lc->reg_write && rd != 0 && rd == rs;
 }
 
@@ -22,4 +22,25 @@ HazardVerdict hazard_check(const Pipeline *p, const DecodedInstr *d,
     }
 
     return v;
+}
+
+Operands forward_operands(const Pipeline *p, const IDEX *d) {
+    Operands o = { d->rs1_val, d->rs2_val, 0, 0 };
+    if (!p->forwarding || d->fault != PF_NONE) return o;
+
+    if (d->ctrl.uses_rs1 && d->instr.rs1 != 0) {
+        if (produces(p->ex_mem.valid, &p->ex_mem.ctrl, p->ex_mem.instr.rd, d->instr.rs1)) {
+            o.a = p->ex_mem.alu_result; o.fwd_ex++;
+        } else if (produces(p->mem_wb.valid, &p->mem_wb.ctrl, p->mem_wb.instr.rd, d->instr.rs1)) {
+            o.a = p->mem_wb.wb_val; o.fwd_mem++;
+        }
+    }
+    if (d->ctrl.uses_rs2 && d->instr.rs2 != 0) {
+        if (produces(p->ex_mem.valid, &p->ex_mem.ctrl, p->ex_mem.instr.rd, d->instr.rs2)) {
+            o.b = p->ex_mem.alu_result; o.fwd_ex++;
+        } else if (produces(p->mem_wb.valid, &p->mem_wb.ctrl, p->mem_wb.instr.rd, d->instr.rs2)) {
+            o.b = p->mem_wb.wb_val; o.fwd_mem++;
+        }
+    }
+    return o;
 }

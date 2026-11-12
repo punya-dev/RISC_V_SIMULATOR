@@ -5,8 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 
-void pipeline_init(Pipeline *p) {
+void pipeline_init(Pipeline *p, int forwarding) {
     memset(p, 0, sizeof(*p));
+    p->forwarding = forwarding;
 }
 
 static uint32_t alu(const DecodedInstr *i, uint32_t pc, uint32_t a, uint32_t b) {
@@ -161,11 +162,12 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
         out.instr = d->instr;
         out.handler = d->handler;
         out.ctrl = d->ctrl;
-        out.store_val = d->rs2_val;
+        Operands o = forward_operands(p, d);
+        out.store_val = o.b;
         if (d->fault != PF_NONE) {
             out.fault_addr = d->pc;
         } else if (d->ctrl.is_branch) {
-            if (branch_taken(d->instr.funct3, d->rs1_val, d->rs2_val)) {
+            if (branch_taken(d->instr.funct3, o.a, o.b)) {
                 flush = 1;
                 redirect_pc = d->pc + (uint32_t)d->instr.imm;
             }
@@ -173,11 +175,11 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
             out.alu_result = d->pc + 4;
             flush = 1;
             if (d->instr.opcode == 0x67)
-                redirect_pc = (d->rs1_val + (uint32_t)d->instr.imm) & ~1u;
+                redirect_pc = (o.a + (uint32_t)d->instr.imm) & ~1u;
             else
                 redirect_pc = d->pc + (uint32_t)d->instr.imm;
         } else {
-            out.alu_result = alu(&d->instr, d->pc, d->rs1_val, d->rs2_val);
+            out.alu_result = alu(&d->instr, d->pc, o.a, o.b);
         }
         nx.ex_mem = out;
     }
