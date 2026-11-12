@@ -21,6 +21,12 @@ HazardVerdict hazard_check(const Pipeline *p, const DecodedInstr *d,
         return v;
     }
 
+    if (p->id_ex.valid && p->id_ex.ctrl.mem_read && p->id_ex.instr.rd != 0 &&
+        ((c->uses_rs1 && d->rs1 == p->id_ex.instr.rd) ||
+         (c->uses_rs2 && d->rs2 == p->id_ex.instr.rd))) {
+        v.stall = 1;
+        v.load_use = 1;
+    }
     return v;
 }
 
