@@ -8,6 +8,7 @@
 #include "rv32i_base.h"
 #include "assembler.h"
 #include "cli_display.h"
+#include "pipeline_state.h"
 
 #define DEFAULT_MEM_SIZE   (1u << 20)   /* 1 MB */
 #define DEFAULT_MAX_CYCLES 1000000ull
@@ -35,6 +36,7 @@ int main(int argc, char **argv) {
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--batch") == 0) {
             batch_mode = 1;
+        } else if (strcmp(argv[i], "--pipeline") == 0) { batch_mode = 2;
         } else if (strcmp(argv[i], "--max-cycles") == 0 && i + 1 < argc) {
             max_cycles = strtoull(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--mem-size") == 0 && i + 1 < argc) {
@@ -75,7 +77,8 @@ int main(int argc, char **argv) {
     CPUState cpu;
     cpu_reset(&cpu, entry_point);
 
-    if (batch_mode) {
+    if (batch_mode == 2) { Pipeline p; pipeline_init(&p); pipeline_run_batch(&p, &cpu, &mem, max_cycles);
+    } else if (batch_mode) {
         run_batch(&cpu, &mem, max_cycles);
     } else {
         run_repl(&cpu, &mem);
