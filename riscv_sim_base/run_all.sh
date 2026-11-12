@@ -21,3 +21,4 @@ for f in tests/*.s; do
   if [ $ok = 1 ]; then pass=$((pass+1)); echo "PASS $name  cycles=$c retired=$r stalls=$s flushes=$fl"; else fail=$((fail+1)); echo "FAIL $name"; fi
 done
 echo "passed=$pass failed=$fail"; [ $fail = 0 ]
+

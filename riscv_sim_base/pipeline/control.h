@@ -25,3 +25,4 @@ typedef struct {
 ControlSignals control_decode(const DecodedInstr *i, const InstructionHandler *h);
 
 #endif /* CONTROL_H */
+

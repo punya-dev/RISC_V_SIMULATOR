@@ -327,3 +327,4 @@ void pipeline_run_batch(Pipeline *p, CPUState *cpu, Memory *mem, uint64_t max_cy
            (unsigned long long)p->flushes,
            cpi);
 }
+

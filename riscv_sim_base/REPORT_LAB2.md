@@ -180,3 +180,4 @@ Walkthrough:
 - **c6:** All producer latches are clear; `I2 (0004)` reads `t0 = 5` and advances to EX next cycle while `I3 (0008)` is fetched.
 - **c7–c9:** `I3 (0008)` stalls 3 cycles waiting for `I2 (0004)` to write `t1 = 15` in c9.
 - **c10–c15:** `I3`, `I4`, and `I5` (`0010`, `ecall`) flow down the diagonal without further hazards. `I5` reaches WB in c15 and exits (`cycles=15, retired=5, stalls=6, flushes=0, CPI=3.000`).
+

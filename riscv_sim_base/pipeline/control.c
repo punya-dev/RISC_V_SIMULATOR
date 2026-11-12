@@ -56,3 +56,4 @@ ControlSignals control_decode(const DecodedInstr *i, const InstructionHandler *h
 
     return c;
 }
+
