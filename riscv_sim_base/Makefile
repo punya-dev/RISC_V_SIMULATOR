@@ -1,6 +1,6 @@
 CC      := gcc
 CFLAGS  := -std=c11 -Wall -Wextra -g -O0 \
-           -Icore -Iisa -Iassembler -Iui
+           -Icore -Iisa -Iassembler -Iui -Ipipeline
 LDFLAGS :=
 
 BIN := rvsim
@@ -14,11 +14,13 @@ SRCS := \
 	isa/rv32i_base.c \
 	assembler/assembler.c \
 	ui/cli_display.c \
+	pipeline/control.c \
+	pipeline/pipeline.c \
 	main.c
 
 OBJS := $(SRCS:.c=.o)
 
-.PHONY: all clean run memcheck test
+.PHONY: all clean run memcheck test check
 
 all: $(BIN)
 
@@ -43,6 +45,9 @@ test: $(BIN)
 		./$(BIN) "$$f" --batch || exit 1; \
 		echo; \
 	done
+
+check: $(BIN)
+	./run_all.sh
 
 clean:
 	rm -f $(OBJS) $(BIN)
