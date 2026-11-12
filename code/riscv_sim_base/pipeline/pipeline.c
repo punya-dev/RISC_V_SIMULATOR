@@ -1,4 +1,5 @@
 #include "pipeline_state.h"
+#include "hazard.h"
 #include "decoder.h"
 #include "cli_display.h"
 #include <stdio.h>
@@ -53,21 +54,6 @@ static int branch_taken(uint32_t funct3, uint32_t a, uint32_t b) {
         case 0x7: return a >= b;
     }
     return 0;
-}
-
-static int produces(int valid, const ControlSignals *lc, uint32_t rd, uint32_t rs) {
-    return valid && lc->reg_write && rd != 0 && rd == rs;
-}
-
-static int hazard_stall(const Pipeline *p, const DecodedInstr *d, const ControlSignals *c) {
-    uint32_t s1 = c->uses_rs1 ? d->rs1 : 0;
-    uint32_t s2 = c->uses_rs2 ? d->rs2 : 0;
-    return produces(p->id_ex.valid, &p->id_ex.ctrl, p->id_ex.instr.rd, s1) ||
-           produces(p->id_ex.valid, &p->id_ex.ctrl, p->id_ex.instr.rd, s2) ||
-           produces(p->ex_mem.valid, &p->ex_mem.ctrl, p->ex_mem.instr.rd, s1) ||
-           produces(p->ex_mem.valid, &p->ex_mem.ctrl, p->ex_mem.instr.rd, s2) ||
-           produces(p->mem_wb.valid, &p->mem_wb.ctrl, p->mem_wb.instr.rd, s1) ||
-           produces(p->mem_wb.valid, &p->mem_wb.ctrl, p->mem_wb.instr.rd, s2);
 }
 
 static void raise_fault(CPUState *cpu, const MEMWB *w) {
@@ -217,7 +203,8 @@ CPUStatus pipeline_cycle(Pipeline *p, CPUState *cpu, Memory *mem) {
                 nx.id_ex = out;
             } else {
                 ControlSignals c = control_decode(&d, h);
-                if (hazard_stall(p, &d, &c)) {
+                HazardVerdict hz = hazard_check(p, &d, &c);
+                if (hz.stall) {
                     nx.id_ex.valid = 0;
                     nx.if_id = p->if_id;
                     stall = 1;

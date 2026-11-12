@@ -14,7 +14,7 @@ SRCS := \
 	isa/rv32i_base.c \
 	assembler/assembler.c \
 	ui/cli_display.c \
-	pipeline/control.c pipeline/pipeline.c \
+	pipeline/control.c pipeline/pipeline.c pipeline/hazard.c \
 	main.c
 
 OBJS := $(SRCS:.c=.o)
