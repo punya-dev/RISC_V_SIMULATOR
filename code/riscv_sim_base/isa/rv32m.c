@@ -32,43 +32,58 @@
 #define FUNCT7_MULDIV 0x01
 
 static void exec_mul(CPUState *c, Memory *m, DecodedInstr *i) {
-    (void)c; (void)m; (void)i;
-    /* TODO(lab4: implement this instruction (see the table above)) */
+    (void)m;
+    cpu_write_reg(c, i->rd, cpu_read_reg(c, i->rs1) * cpu_read_reg(c, i->rs2));
 }
 
 static void exec_mulh(CPUState *c, Memory *m, DecodedInstr *i) {
-    (void)c; (void)m; (void)i;
-    /* TODO(lab4: implement this instruction (see the table above)) */
+    (void)m;
+    int64_t p = (int64_t)(int32_t)cpu_read_reg(c, i->rs1) * (int64_t)(int32_t)cpu_read_reg(c, i->rs2);
+    cpu_write_reg(c, i->rd, (uint32_t)((uint64_t)p >> 32));
 }
 
 static void exec_mulhsu(CPUState *c, Memory *m, DecodedInstr *i) {
-    (void)c; (void)m; (void)i;
-    /* TODO(lab4: implement this instruction (see the table above)) */
+    (void)m;
+    int64_t p = (int64_t)(int32_t)cpu_read_reg(c, i->rs1) * (int64_t)cpu_read_reg(c, i->rs2);
+    cpu_write_reg(c, i->rd, (uint32_t)((uint64_t)p >> 32));
 }
 
 static void exec_mulhu(CPUState *c, Memory *m, DecodedInstr *i) {
-    (void)c; (void)m; (void)i;
-    /* TODO(lab4: implement this instruction (see the table above)) */
+    (void)m;
+    uint64_t p = (uint64_t)cpu_read_reg(c, i->rs1) * (uint64_t)cpu_read_reg(c, i->rs2);
+    cpu_write_reg(c, i->rd, (uint32_t)(p >> 32));
 }
 
 static void exec_div(CPUState *c, Memory *m, DecodedInstr *i) {
-    (void)c; (void)m; (void)i;
-    /* TODO(lab4: implement this instruction (see the table above)) */
+    (void)m;
+    int32_t a = (int32_t)cpu_read_reg(c, i->rs1), b = (int32_t)cpu_read_reg(c, i->rs2);
+    uint32_t v;
+    if (b == 0) v = 0xFFFFFFFFu;
+    else if (a == INT32_MIN && b == -1) v = (uint32_t)INT32_MIN;
+    else v = (uint32_t)(a / b);
+    cpu_write_reg(c, i->rd, v);
 }
 
 static void exec_divu(CPUState *c, Memory *m, DecodedInstr *i) {
-    (void)c; (void)m; (void)i;
-    /* TODO(lab4: implement this instruction (see the table above)) */
+    (void)m;
+    uint32_t a = cpu_read_reg(c, i->rs1), b = cpu_read_reg(c, i->rs2);
+    cpu_write_reg(c, i->rd, b ? a / b : 0xFFFFFFFFu);
 }
 
 static void exec_rem(CPUState *c, Memory *m, DecodedInstr *i) {
-    (void)c; (void)m; (void)i;
-    /* TODO(lab4: implement this instruction (see the table above)) */
+    (void)m;
+    int32_t a = (int32_t)cpu_read_reg(c, i->rs1), b = (int32_t)cpu_read_reg(c, i->rs2);
+    uint32_t v;
+    if (b == 0) v = (uint32_t)a;
+    else if (a == INT32_MIN && b == -1) v = 0;
+    else v = (uint32_t)(a % b);
+    cpu_write_reg(c, i->rd, v);
 }
 
 static void exec_remu(CPUState *c, Memory *m, DecodedInstr *i) {
-    (void)c; (void)m; (void)i;
-    /* TODO(lab4: implement this instruction (see the table above)) */
+    (void)m;
+    uint32_t a = cpu_read_reg(c, i->rs1), b = cpu_read_reg(c, i->rs2);
+    cpu_write_reg(c, i->rd, b ? a % b : a);
 }
 
 void register_rv32m(void) {
