@@ -5,10 +5,16 @@
  * register file once every older producer of its sources has written back.
  * (WB writes before ID reads in the same cycle.)
  */
+static int writes(const HazardSlot *s, int r) {
+    return r != REG_NONE && s->valid && s->ctrl.dst == r;
+}
+
 static void decide_stall(const HazardInput *in, HazardDecision *out) {
-    (void)in; (void)out;
-    /* TODO(lab2): set out->stall when the ID instruction (in->id) reads a
-     * register (src1/src2/src3) that the EX or MEM instruction writes. */
+    if (!in->id.valid) return;
+    const int srcs[3] = {in->id.ctrl.src1, in->id.ctrl.src2, in->id.ctrl.src3};
+    for (int k = 0; k < 3; k++) {
+        if (writes(&in->ex, srcs[k]) || writes(&in->mem, srcs[k])) out->stall = 1;
+    }
 }
 
 const HazardDetector hazard_stall = {
