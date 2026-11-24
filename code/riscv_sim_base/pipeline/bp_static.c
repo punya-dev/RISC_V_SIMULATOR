@@ -32,8 +32,8 @@ const BranchPredictor bp_not_taken = {
  * branches usually skip rarely-executed code. The target is known in IF
  * from the pre-decoded immediate, so this costs no state at all. */
 static int predict_btfn(const BPState *s, uint32_t pc, uint32_t target) {
-    (void)s; (void)pc; (void)target;
-    return 0; /* TODO(lab3) */
+    (void)s;
+    return target < pc;
 }
 
 const BranchPredictor bp_btfn = {

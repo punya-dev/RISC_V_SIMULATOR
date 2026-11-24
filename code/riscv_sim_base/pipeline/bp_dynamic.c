@@ -12,13 +12,13 @@ static void reset_1bit(BPState *s) {
 }
 
 static int predict_1bit(const BPState *s, uint32_t pc, uint32_t target) {
-    (void)s; (void)pc; (void)target;
-    return 0; /* TODO(lab3) */
+    (void)target;
+    return s->table[bp_index(pc)] != 0;
 }
 
 static void update_1bit(BPState *s, uint32_t pc, uint32_t target, int taken) {
-    (void)s; (void)pc; (void)target; (void)taken;
-    /* TODO(lab3) */
+    (void)target;
+    s->table[bp_index(pc)] = taken ? 1 : 0;
 }
 
 const BranchPredictor bp_1bit = {
@@ -45,13 +45,15 @@ static void reset_2bit(BPState *s) {
 }
 
 static int predict_2bit(const BPState *s, uint32_t pc, uint32_t target) {
-    (void)s; (void)pc; (void)target;
-    return 0; /* TODO(lab3) */
+    (void)target;
+    return s->table[bp_index(pc)] >= 2;
 }
 
 static void update_2bit(BPState *s, uint32_t pc, uint32_t target, int taken) {
-    (void)s; (void)pc; (void)target; (void)taken;
-    /* TODO(lab3): saturating counter 0..CTR_MAX */
+    (void)target;
+    uint8_t *ctr = &s->table[bp_index(pc)];
+    if (taken && *ctr < CTR_MAX) (*ctr)++;
+    else if (!taken && *ctr > 0) (*ctr)--;
 }
 
 const BranchPredictor bp_2bit = {
