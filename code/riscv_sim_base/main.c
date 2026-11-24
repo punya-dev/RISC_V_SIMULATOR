@@ -6,9 +6,13 @@
 #include "memory.h"
 #include "isa_registry.h"
 #include "rv32i_base.h"
+#include "rv32m.h"
+#include "rv32f.h"
+#include "zicsr.h"
 #include "assembler.h"
 #include "cli_display.h"
-#include "pipeline_state.h"
+#include "sim_engine.h"
+#include "pipeline.h"
 
 #define DEFAULT_MEM_SIZE   (1u << 20)   /* 1 MB */
 #define DEFAULT_MAX_CYCLES 1000000ull
@@ -17,9 +21,13 @@ static void usage(const char *prog) {
     fprintf(stderr,
         "usage: %s <program.s> [options]\n"
         "  --batch              run to completion with no interaction, then dump state\n"
+        "  --trace              (with --batch) print every cycle's stage occupancy\n"
+        "  --single-cycle       use the original single-cycle core instead of the pipeline\n"
+        "  --hazard NAME        pipeline hazard unit: %s (default forward)\n"
+        "  --predictor NAME     branch predictor: %s (default 2bit)\n"
         "  --max-cycles N       cycle limit for --batch mode (default %llu)\n"
         "  --mem-size N         memory size in bytes (default %u)\n",
-        prog, (unsigned long long)DEFAULT_MAX_CYCLES, DEFAULT_MEM_SIZE);
+        prog, hazard_names(), bp_names(), (unsigned long long)DEFAULT_MAX_CYCLES, DEFAULT_MEM_SIZE);
 }
 
 int main(int argc, char **argv) {
@@ -30,14 +38,31 @@ int main(int argc, char **argv) {
 
     const char *program_path = argv[1];
     int batch_mode = 0;
+    int trace = 0;
+    int single_cycle = 0;
+    PipelineConfig pcfg = { &hazard_forward, &bp_2bit };
     uint64_t max_cycles = DEFAULT_MAX_CYCLES;
     uint32_t mem_size = DEFAULT_MEM_SIZE;
 
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--batch") == 0) {
             batch_mode = 1;
-        } else if (strcmp(argv[i], "--pipeline") == 0) { batch_mode = 2;
-        } else if (strcmp(argv[i], "--pipeline-forward") == 0) { batch_mode = 3;
+        } else if (strcmp(argv[i], "--trace") == 0) {
+            trace = 1;
+        } else if (strcmp(argv[i], "--single-cycle") == 0) {
+            single_cycle = 1;
+        } else if (strcmp(argv[i], "--hazard") == 0 && i + 1 < argc) {
+            pcfg.hazard = hazard_find(argv[++i]);
+            if (!pcfg.hazard) {
+                fprintf(stderr, "unknown hazard unit '%s' (available: %s)\n", argv[i], hazard_names());
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--predictor") == 0 && i + 1 < argc) {
+            pcfg.predictor = bp_find(argv[++i]);
+            if (!pcfg.predictor) {
+                fprintf(stderr, "unknown branch predictor '%s' (available: %s)\n", argv[i], bp_names());
+                return 1;
+            }
         } else if (strcmp(argv[i], "--max-cycles") == 0 && i + 1 < argc) {
             max_cycles = strtoull(argv[++i], NULL, 0);
         } else if (strcmp(argv[i], "--mem-size") == 0 && i + 1 < argc) {
@@ -53,6 +78,9 @@ int main(int argc, char **argv) {
      *    register_rv32f(), register_custom_ext(), etc. right here. */
     isa_registry_init();
     register_rv32i_base();
+    register_rv32m();       /* Lab 4: integer multiply/divide */
+    register_rv32f();       /* Lab 5: single-precision floating point */
+    register_zicsr();       /* Lab 5: CSR access (fflags / frm / fcsr) */
 
     /* 2. Set up memory and assemble the program into it. */
     Memory mem;
@@ -74,15 +102,24 @@ int main(int argc, char **argv) {
 
     printf("assembled '%s' ok. entry point = 0x%08x\n", program_path, entry_point);
 
-    /* 3. Reset the CPU at the program's entry point and run it. */
+    /* 3. Reset the CPU at the program's entry point, pick the machine
+     *    (5-stage pipeline by default), and run it. */
     CPUState cpu;
     cpu_reset(&cpu, entry_point);
 
-    if (batch_mode >= 2) { Pipeline p; pipeline_init(&p, batch_mode == 3); pipeline_run_batch(&p, &cpu, &mem, max_cycles);
-    } else if (batch_mode) {
-        run_batch(&cpu, &mem, max_cycles);
+    SimEngine engine;
+    PipelineState pipe;
+    if (single_cycle) {
+        sim_engine_single_cycle(&engine, &cpu, &mem);
     } else {
-        run_repl(&cpu, &mem);
+        pipeline_reset(&pipe, entry_point, &pcfg);
+        pipeline_make_engine(&engine, &pipe, &cpu, &mem);
+    }
+
+    if (batch_mode) {
+        run_batch(&engine, max_cycles, trace);
+    } else {
+        run_repl(&engine);
     }
 
     memory_free(&mem);

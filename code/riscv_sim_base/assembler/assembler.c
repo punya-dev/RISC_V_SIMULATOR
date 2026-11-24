@@ -153,6 +153,37 @@ static int parse_register(const char *token, uint32_t *out, AsmError *err, int l
     return ASM_OK;
 }
 
+/* Lab 5: an operand is either an x register or an f register, depending
+ * on the instruction's IF_*_FP flags. */
+static int parse_reg_class(const char *token, int is_fp, uint32_t *out, AsmError *err, int lineno) {
+    if (!is_fp) return parse_register(token, out, err, lineno);
+    int idx = cpu_freg_index_from_name(token);
+    if (idx < 0) return set_err(err, lineno, ASM_ERR_BAD_OPERAND,
+                                "'%s' is not a valid floating-point register name", token);
+    *out = (uint32_t)idx;
+    return ASM_OK;
+}
+
+/* Optional trailing rounding-mode operand: rne rtz rdn rup rmm dyn. */
+static int parse_rm(const char *token, uint32_t *out, AsmError *err, int lineno) {
+    static const char *names[] = {"rne", "rtz", "rdn", "rup", "rmm", NULL, NULL, "dyn"};
+    for (uint32_t i = 0; i < 8; i++) {
+        if (names[i] && strcmp(token, names[i]) == 0) { *out = i; return ASM_OK; }
+    }
+    return set_err(err, lineno, ASM_ERR_BAD_OPERAND,
+                   "'%s' is not a rounding mode (rne, rtz, rdn, rup, rmm, dyn)", token);
+}
+
+/* CSR operand: a name (fflags, frm, fcsr) or a number. */
+static int parse_csr(const char *token, int32_t *out, AsmError *err, int lineno) {
+    int n = cpu_csr_number_from_name(token);
+    if (n >= 0) { *out = n; return ASM_OK; }
+    char *end;
+    long v = strtol(token, &end, 0);
+    if (*end == '\0' && end != token && v >= 0 && v <= 0xFFF) { *out = (int32_t)v; return ASM_OK; }
+    return set_err(err, lineno, ASM_ERR_BAD_OPERAND, "'%s' is not a CSR name or number", token);
+}
+
 /* Parses "imm(reg)" e.g. "0(sp)", "-4(t0)", "(a0)". */
 static int parse_offset_paren(const char *token, SymbolTable *st, uint32_t addr,
                                int32_t *imm_out, uint32_t *reg_out, AsmError *err, int lineno) {
@@ -174,23 +205,77 @@ static int parse_offset_paren(const char *token, SymbolTable *st, uint32_t addr,
     return parse_register(reg_part, reg_out, err, lineno);
 }
 
-typedef struct { uint32_t rd, rs1, rs2; int32_t imm; } Fields;
+/* rs3/has_rm/rm were added in Lab 5 at the END, so the field order the
+ * older initializers use ({rd, rs1, rs2, imm, ...}) is unchanged. has_rm = 0
+ * means "no rounding-mode operand given" (encoded as dyn). */
+typedef struct { uint32_t rd, rs1, rs2; int32_t imm; uint32_t rs3; int has_rm; uint32_t rm; } Fields;
 
-static int parse_fields(InstrFormat fmt, char *operand_str, SymbolTable *st, uint32_t addr,
+static int parse_fields(const InstructionHandler *h, char *operand_str, SymbolTable *st, uint32_t addr,
                          Fields *f, AsmError *err, int lineno) {
     char buf[256];
     strncpy(buf, operand_str, sizeof(buf) - 1); buf[sizeof(buf) - 1] = '\0';
-    char *tok[4];
-    int n = split_commas(buf, tok, 4);
+    char *tok[6];
+    int n = split_commas(buf, tok, 6);
     memset(f, 0, sizeof(*f));
+
+    InstrFormat fmt = h->format;
+    uint32_t hf = isa_flags(h);
+    int rd_fp  = (hf & IF_RD_FP)  != 0;
+    int rs1_fp = (hf & IF_RS1_FP) != 0;
+    int rs2_fp = (hf & IF_RS2_FP) != 0;
+    int rs3_fp = (hf & IF_RS3_FP) != 0;
+    int has_rm = (hf & IF_HAS_RM) != 0;
+
+    /* Number of register/immediate operands before an optional ", rm". */
+    int base = (fmt == FMT_R4) ? 4 : (fmt == FMT_R2) ? 2 : 3;
+    if (has_rm && n == base + 1) {
+        if (parse_rm(tok[base], &f->rm, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+        f->has_rm = 1;
+        n--;
+    }
 
     switch (fmt) {
         case FMT_R:
-            if (n != 3) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'rd, rs1, rs2'");
-            if (parse_register(tok[0], &f->rd, err, lineno)  != ASM_OK) return ASM_ERR_BAD_OPERAND;
-            if (parse_register(tok[1], &f->rs1, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
-            if (parse_register(tok[2], &f->rs2, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (n != 3) return set_err(err, lineno, ASM_ERR_SYNTAX,
+                                       has_rm ? "expected 'rd, rs1, rs2[, rm]'" : "expected 'rd, rs1, rs2'");
+            if (parse_reg_class(tok[0], rd_fp,  &f->rd, err, lineno)  != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_reg_class(tok[1], rs1_fp, &f->rs1, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_reg_class(tok[2], rs2_fp, &f->rs2, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
             return ASM_OK;
+
+        case FMT_R2:
+            if (n != 2) return set_err(err, lineno, ASM_ERR_SYNTAX,
+                                       has_rm ? "expected 'rd, rs1[, rm]'" : "expected 'rd, rs1'");
+            if (parse_reg_class(tok[0], rd_fp,  &f->rd, err, lineno)  != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_reg_class(tok[1], rs1_fp, &f->rs1, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            return ASM_OK;
+
+        case FMT_R4:
+            if (n != 4) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'rd, rs1, rs2, rs3[, rm]'");
+            if (parse_reg_class(tok[0], rd_fp,  &f->rd, err, lineno)  != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_reg_class(tok[1], rs1_fp, &f->rs1, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_reg_class(tok[2], rs2_fp, &f->rs2, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_reg_class(tok[3], rs3_fp, &f->rs3, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            return ASM_OK;
+
+        case FMT_CSR:
+            if (n != 3) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'rd, csr, rs1'");
+            if (parse_register(tok[0], &f->rd, err, lineno)  != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_csr(tok[1], &f->imm, err, lineno)      != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_register(tok[2], &f->rs1, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            return ASM_OK;
+
+        case FMT_CSRI: {
+            if (n != 3) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'rd, csr, uimm5'");
+            if (parse_register(tok[0], &f->rd, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_csr(tok[1], &f->imm, err, lineno)     != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            int32_t u;
+            int st_ok = parse_value(tok[2], st, addr, 0, &u, err, lineno);
+            if (st_ok != ASM_OK) return st_ok;
+            if (u < 0 || u > 31) return set_err(err, lineno, ASM_ERR_BAD_OPERAND, "CSR immediate must be 0..31");
+            f->rs1 = (uint32_t)u; /* the uimm lives in the rs1 field */
+            return ASM_OK;
+        }
 
         case FMT_I:
         case FMT_I_SHAMT:
@@ -202,7 +287,7 @@ static int parse_fields(InstrFormat fmt, char *operand_str, SymbolTable *st, uin
         case FMT_I_LOAD:
         case FMT_I_JALR:
             if (n != 2) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'rd, offset(rs1)'");
-            if (parse_register(tok[0], &f->rd, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_reg_class(tok[0], rd_fp, &f->rd, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
             return parse_offset_paren(tok[1], st, addr, &f->imm, &f->rs1, err, lineno);
 
         case FMT_I_SYS:
@@ -210,7 +295,7 @@ static int parse_fields(InstrFormat fmt, char *operand_str, SymbolTable *st, uin
 
         case FMT_S:
             if (n != 2) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'rs2, offset(rs1)'");
-            if (parse_register(tok[0], &f->rs2, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
+            if (parse_reg_class(tok[0], rs2_fp, &f->rs2, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
             return parse_offset_paren(tok[1], st, addr, &f->imm, &f->rs1, err, lineno);
 
         case FMT_B:
@@ -244,9 +329,25 @@ static uint32_t encode_instruction(const InstructionHandler *h, Fields f) {
     uint32_t funct7 = (h->funct7 >= 0) ? (uint32_t)h->funct7 : 0;
     uint32_t imm    = (uint32_t)f.imm;
 
+    /* Lab 5: a rounding-mode funct3 defaults to dyn (use fcsr.frm). */
+    if (isa_flags(h) & IF_HAS_RM) funct3 = f.has_rm ? (f.rm & 0x7) : RM_DYN;
+
     switch (h->format) {
         case FMT_R:
             return (funct7 << 25) | ((f.rs2 & 0x1F) << 20) | ((f.rs1 & 0x1F) << 15) |
+                   (funct3 << 12) | ((f.rd & 0x1F) << 7) | opcode;
+
+        case FMT_R2: /* the rs2 field is a fixed part of the opcode */
+            return (funct7 << 25) | ((isa_rs2_sel(h) & 0x1F) << 20) | ((f.rs1 & 0x1F) << 15) |
+                   (funct3 << 12) | ((f.rd & 0x1F) << 7) | opcode;
+
+        case FMT_R4: /* bits 26:25 = fmt, 00 for single precision */
+            return ((f.rs3 & 0x1F) << 27) | ((f.rs2 & 0x1F) << 20) | ((f.rs1 & 0x1F) << 15) |
+                   (funct3 << 12) | ((f.rd & 0x1F) << 7) | opcode;
+
+        case FMT_CSR:
+        case FMT_CSRI:
+            return ((imm & 0xFFF) << 20) | ((f.rs1 & 0x1F) << 15) |
                    (funct3 << 12) | ((f.rd & 0x1F) << 7) | opcode;
 
         case FMT_I:
@@ -292,13 +393,14 @@ static uint32_t encode_instruction(const InstructionHandler *h, Fields f) {
 /* ------------------------------------------------------------------ */
 /* Pseudo-instructions                                                */
 /* ------------------------------------------------------------------ */
-/* Kept deliberately minimal. "li" always expands to exactly two real
+/* Kept deliberately minimal. "li" (and its alias "la") always expands to exactly two real
  * instructions (lui + addi) regardless of the value's magnitude -- this
  * keeps its size fixed and known during pass 1, at the cost of occasionally
  * emitting a redundant lui for small constants. */
 
 static int pseudo_instruction_size(const char *mnemonic) {
     if (strcmp(mnemonic, "li") == 0) return 8;
+    if (strcmp(mnemonic, "la") == 0) return 8;
     if (strcmp(mnemonic, "nop") == 0) return 4;
     if (strcmp(mnemonic, "ret") == 0) return 4;
     if (strcmp(mnemonic, "j") == 0) return 4;
@@ -325,20 +427,20 @@ static int assemble_pseudo(const char *mnemonic, char *operand_str, SymbolTable 
 
     if (strcmp(mnemonic, "nop") == 0) {
         const InstructionHandler *h = isa_find_by_mnemonic("addi");
-        Fields f = {0, 0, 0, 0};
+        Fields f = {0, 0, 0, 0, 0, 0, 0};
         memory_write_word(mem, addr, encode_instruction(h, f));
         return ASM_OK;
     }
     if (strcmp(mnemonic, "ret") == 0) {
         const InstructionHandler *h = isa_find_by_mnemonic("jalr");
-        Fields f = {0, 1 /* ra */, 0, 0};
+        Fields f = {0, 1 /* ra */, 0, 0, 0, 0, 0};
         memory_write_word(mem, addr, encode_instruction(h, f));
         return ASM_OK;
     }
     if (strcmp(mnemonic, "mv") == 0) {
         if (n != 2) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'mv rd, rs'");
         const InstructionHandler *h = isa_find_by_mnemonic("addi");
-        Fields f = {0, 0, 0, 0};
+        Fields f = {0, 0, 0, 0, 0, 0, 0};
         if (parse_register(tok[0], &f.rd, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
         if (parse_register(tok[1], &f.rs1, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
         memory_write_word(mem, addr, encode_instruction(h, f));
@@ -347,14 +449,16 @@ static int assemble_pseudo(const char *mnemonic, char *operand_str, SymbolTable 
     if (strcmp(mnemonic, "j") == 0) {
         if (n != 1) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'j label'");
         const InstructionHandler *h = isa_find_by_mnemonic("jal");
-        Fields f = {0, 0, 0, 0};
+        Fields f = {0, 0, 0, 0, 0, 0, 0};
         int st_ok = parse_value(tok[0], st, addr, 1, &f.imm, err, lineno);
         if (st_ok != ASM_OK) return st_ok;
         memory_write_word(mem, addr, encode_instruction(h, f));
         return ASM_OK;
     }
-    if (strcmp(mnemonic, "li") == 0) {
-        if (n != 2) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected 'li rd, imm'");
+    /* "la rd, label" is the same lui+addi pair as "li". It exists so test
+     * programs can also be assembled by RARS, which rejects "li rd, label". */
+    if (strcmp(mnemonic, "li") == 0 || strcmp(mnemonic, "la") == 0) {
+        if (n != 2) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected '%s rd, value'", mnemonic);
         uint32_t rd;
         if (parse_register(tok[0], &rd, err, lineno) != ASM_OK) return ASM_ERR_BAD_OPERAND;
         int32_t value;
@@ -366,8 +470,8 @@ static int assemble_pseudo(const char *mnemonic, char *operand_str, SymbolTable 
 
         const InstructionHandler *hl = isa_find_by_mnemonic("lui");
         const InstructionHandler *ha = isa_find_by_mnemonic("addi");
-        Fields fl = {rd, 0, 0, (int32_t)upper20};
-        Fields fa = {rd, rd, 0, lower12};
+        Fields fl = {rd, 0, 0, (int32_t)upper20, 0, 0, 0};
+        Fields fa = {rd, rd, 0, lower12, 0, 0, 0};
         memory_write_word(mem, addr,     encode_instruction(hl, fl));
         memory_write_word(mem, addr + 4, encode_instruction(ha, fa));
         return ASM_OK;
@@ -376,11 +480,82 @@ static int assemble_pseudo(const char *mnemonic, char *operand_str, SymbolTable 
 }
 
 /* ------------------------------------------------------------------ */
-/* Directives (.word / .half / .byte / .align / .text / .data / .globl)*/
+/* Aliases (Lab 5): pseudo-instructions that are exactly ONE real      */
+/* instruction with rewritten operands. They are expanded into the     */
+/* real mnemonic + operand string and then assembled through the       */
+/* normal parse_fields()/encode_instruction() path.                    */
+/* ------------------------------------------------------------------ */
+
+static const char *const g_alias_names[] = {
+    "fmv.s", "fneg.s", "fabs.s",
+    "frcsr", "fscsr", "frrm", "fsrm", "frflags", "fsflags", "fsrmi", "fsflagsi",
+    "csrr", "csrw", "csrs", "csrc", "csrwi", "csrsi", "csrci",
+    NULL
+};
+
+static int is_alias(const char *mnemonic) {
+    for (int i = 0; g_alias_names[i]; i++)
+        if (strcmp(mnemonic, g_alias_names[i]) == 0) return 1;
+    return 0;
+}
+
+/* Writes the real mnemonic into `real` and its operands into `ops`. */
+static int expand_alias(const char *mn, const char *operand_str, char *real, char *ops, size_t ops_size,
+                        AsmError *err, int lineno) {
+    char buf[256];
+    strncpy(buf, operand_str, sizeof(buf) - 1); buf[sizeof(buf) - 1] = '\0';
+    char *t[3];
+    int n = split_commas(buf, t, 3);
+
+#define ALIAS(r, ...) do { strcpy(real, r); snprintf(ops, ops_size, __VA_ARGS__); return ASM_OK; } while (0)
+#define NEED(k, form) do { if (n != (k)) return set_err(err, lineno, ASM_ERR_SYNTAX, "expected '%s %s'", mn, form); } while (0)
+
+    /* fd, fs  ->  fsgnj*.s fd, fs, fs */
+    if (strcmp(mn, "fmv.s") == 0)  { NEED(2, "fd, fs"); ALIAS("fsgnj.s",  "%s, %s, %s", t[0], t[1], t[1]); }
+    if (strcmp(mn, "fneg.s") == 0) { NEED(2, "fd, fs"); ALIAS("fsgnjn.s", "%s, %s, %s", t[0], t[1], t[1]); }
+    if (strcmp(mn, "fabs.s") == 0) { NEED(2, "fd, fs"); ALIAS("fsgnjx.s", "%s, %s, %s", t[0], t[1], t[1]); }
+
+    /* read a CSR:  rd  ->  csrrs rd, csr, x0 */
+    if (strcmp(mn, "frcsr") == 0)   { NEED(1, "rd"); ALIAS("csrrs", "%s, fcsr, x0", t[0]); }
+    if (strcmp(mn, "frrm") == 0)    { NEED(1, "rd"); ALIAS("csrrs", "%s, frm, x0", t[0]); }
+    if (strcmp(mn, "frflags") == 0) { NEED(1, "rd"); ALIAS("csrrs", "%s, fflags, x0", t[0]); }
+
+    /* swap a CSR:  [rd,] rs  ->  csrrw rd|x0, csr, rs   (and the immediate forms) */
+    {
+        const char *csr = NULL, *op = "csrrw";
+        if (strcmp(mn, "fscsr") == 0)    csr = "fcsr";
+        if (strcmp(mn, "fsrm") == 0)     csr = "frm";
+        if (strcmp(mn, "fsflags") == 0)  csr = "fflags";
+        if (strcmp(mn, "fsrmi") == 0)    { csr = "frm";    op = "csrrwi"; }
+        if (strcmp(mn, "fsflagsi") == 0) { csr = "fflags"; op = "csrrwi"; }
+        if (csr) {
+            if (n == 1) ALIAS(op, "x0, %s, %s", csr, t[0]);
+            if (n == 2) ALIAS(op, "%s, %s, %s", t[0], csr, t[1]);
+            return set_err(err, lineno, ASM_ERR_SYNTAX, "expected '%s [rd,] rs'", mn);
+        }
+    }
+
+    /* generic CSR forms (standard operand order: csr first for writes) */
+    if (strcmp(mn, "csrr") == 0)  { NEED(2, "rd, csr");   ALIAS("csrrs",  "%s, %s, x0", t[0], t[1]); }
+    if (strcmp(mn, "csrw") == 0)  { NEED(2, "csr, rs");   ALIAS("csrrw",  "x0, %s, %s", t[0], t[1]); }
+    if (strcmp(mn, "csrs") == 0)  { NEED(2, "csr, rs");   ALIAS("csrrs",  "x0, %s, %s", t[0], t[1]); }
+    if (strcmp(mn, "csrc") == 0)  { NEED(2, "csr, rs");   ALIAS("csrrc",  "x0, %s, %s", t[0], t[1]); }
+    if (strcmp(mn, "csrwi") == 0) { NEED(2, "csr, imm");  ALIAS("csrrwi", "x0, %s, %s", t[0], t[1]); }
+    if (strcmp(mn, "csrsi") == 0) { NEED(2, "csr, imm");  ALIAS("csrrsi", "x0, %s, %s", t[0], t[1]); }
+    if (strcmp(mn, "csrci") == 0) { NEED(2, "csr, imm");  ALIAS("csrrci", "x0, %s, %s", t[0], t[1]); }
+
+#undef ALIAS
+#undef NEED
+    return set_err(err, lineno, ASM_ERR_UNKNOWN_MNEMONIC, "unknown alias '%s'", mn);
+}
+
+/* ------------------------------------------------------------------ */
+/* Directives (.word / .half / .byte / .float / .align / .text / ...) */
 /* ------------------------------------------------------------------ */
 
 static int directive_element_size(const char *mnemonic) {
     if (strcmp(mnemonic, ".word") == 0) return 4;
+    if (strcmp(mnemonic, ".float") == 0) return 4;   /* Lab 5: IEEE 754 single */
     if (strcmp(mnemonic, ".half") == 0) return 2;
     if (strcmp(mnemonic, ".byte") == 0) return 1;
     return 0;
@@ -477,6 +652,8 @@ AsmStatus assemble_file(const char *filename, Memory *mem, uint32_t *out_entry_p
         int pseudo_size = pseudo_instruction_size(mnemonic);
         if (pseudo_size > 0) { addr += (uint32_t)pseudo_size; continue; }
 
+        if (is_alias(mnemonic)) { addr += 4; continue; }
+
         if (isa_find_by_mnemonic(mnemonic)) { addr += 4; continue; }
 
         return (AsmStatus)set_err(err, lines[i].lineno, ASM_ERR_UNKNOWN_MNEMONIC,
@@ -509,8 +686,22 @@ AsmStatus assemble_file(const char *filename, Memory *mem, uint32_t *out_entry_p
             int n = split_commas(buf, tok, 64);
             for (int k = 0; k < n; k++) {
                 int32_t v;
-                int st_ok = parse_value(tok[k], &st, addr, 0, &v, err, lines[i].lineno);
-                if (st_ok != ASM_OK) return (AsmStatus)st_ok;
+                if (strcmp(mnemonic, ".float") == 0) {
+                    /* strtof rounds the decimal literal to nearest-even;
+                     * memcpy (not a pointer cast) takes its bit pattern. */
+                    char *endp;
+                    float fv = strtof(tok[k], &endp);
+                    if (endp == tok[k] || *endp != '\0') {
+                        return (AsmStatus)set_err(err, lines[i].lineno, ASM_ERR_BAD_OPERAND,
+                                                   "'%s' is not a floating-point literal", tok[k]);
+                    }
+                    uint32_t fb;
+                    memcpy(&fb, &fv, sizeof fb);
+                    v = (int32_t)fb;
+                } else {
+                    int st_ok = parse_value(tok[k], &st, addr, 0, &v, err, lines[i].lineno);
+                    if (st_ok != ASM_OK) return (AsmStatus)st_ok;
+                }
                 MemStatus ms;
                 if (elem_size == 4) ms = memory_write_word(mem, addr, (uint32_t)v);
                 else if (elem_size == 2) ms = memory_write_half(mem, addr, (uint16_t)v);
@@ -530,13 +721,21 @@ AsmStatus assemble_file(const char *filename, Memory *mem, uint32_t *out_entry_p
             continue;
         }
 
+        if (is_alias(mnemonic)) {
+            char real[32], real_ops[256];
+            int al_ok = expand_alias(mnemonic, operands, real, real_ops, sizeof(real_ops), err, lines[i].lineno);
+            if (al_ok != ASM_OK) return (AsmStatus)al_ok;
+            strcpy(mnemonic, real);
+            strcpy(operands, real_ops);
+        }
+
         const InstructionHandler *h = isa_find_by_mnemonic(mnemonic);
         if (!h) {
             return (AsmStatus)set_err(err, lines[i].lineno, ASM_ERR_UNKNOWN_MNEMONIC,
                                        "unknown instruction or directive '%s'", mnemonic);
         }
         Fields f;
-        int st_ok = parse_fields(h->format, operands, &st, addr, &f, err, lines[i].lineno);
+        int st_ok = parse_fields(h, operands, &st, addr, &f, err, lines[i].lineno);
         if (st_ok != ASM_OK) return (AsmStatus)st_ok;
 
         uint32_t word = encode_instruction(h, f);
